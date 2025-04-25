@@ -1,0 +1,97 @@
+package com.example.webhook;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.http.*;
+import org.springframework.web.client.RestTemplate;
+
+import java.io.File;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@SpringBootApplication
+public class WebhookApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(WebhookApplication.class, args);
+    }
+
+    @Bean
+    CommandLineRunner run() {
+        return args -> {
+            var restTemplate = new RestTemplate();
+            var objectMapper = new ObjectMapper();
+
+            var registrationUrl = "https://bfhldevapigw.healthrx.co.in/hiring/generateWebhook";
+            var requestBody = Map.of(
+                    "name", "John Doe",
+                    "regNo", "REG12347",
+                    "email", "john@example.com"
+            );
+
+            var headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            var request = new HttpEntity<>(requestBody, headers);
+
+            var response = restTemplate.postForEntity(registrationUrl, request, ApiResponse.class);
+            var apiResponse = Objects.requireNonNull(response.getBody());
+
+            var accessToken = apiResponse.accessToken;
+            var webhookUrl = apiResponse.webhook;
+            var users = apiResponse.data.users;
+
+            List<List<Integer>> outcome = new ArrayList<>();
+            if (requestBody.get("regNo").matches(".*[13579]$")) {
+                var followsMap = users.stream().collect(Collectors.toMap(u -> u.id, u -> new HashSet<>(u.follows)));
+                var seen = new HashSet<String>();
+                for (var user : users) {
+                    for (var followed : user.follows) {
+                        if (followsMap.getOrDefault(followed, Set.of()).contains(user.id)) {
+                            int min = Math.min(user.id, followed), max = Math.max(user.id, followed);
+                            if (seen.add(min + "," + max)) outcome.add(List.of(min, max));
+                        }
+                    }
+                }
+            }
+
+            var output = Map.of("regNo", requestBody.get("regNo"), "outcome", outcome);
+            objectMapper.writeValue(new File("output.json"), output);
+
+            var postHeaders = new HttpHeaders();
+            postHeaders.setContentType(MediaType.APPLICATION_JSON);
+            postHeaders.set("Authorization", accessToken);
+            var postRequest = new HttpEntity<>(output, postHeaders);
+
+            for (int i = 0; i < 4; i++) {
+                try {
+                    var postResp = restTemplate.postForEntity(webhookUrl, postRequest, String.class);
+                    if (postResp.getStatusCode().is2xxSuccessful()) break;
+                } catch (Exception e) {
+                    Thread.sleep(1000);
+                }
+            }
+        };
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class ApiResponse {
+        public String webhook;
+        public String accessToken;
+        public Data data;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class Data {
+        public List<User> users;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class User {
+        public int id;
+        public String name;
+        public List<Integer> follows;
+    }
+}
